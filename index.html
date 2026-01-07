@@ -132,7 +132,10 @@
     const minCameraDist = 2.2;
     const maxCameraDist = 100;
     const clampCamera = (value) => Math.max(minCameraDist, Math.min(maxCameraDist, value));
+    const clampWOffset = (value) => Math.max(-4, Math.min(6, value));
     let pinchStartDistance = null;
+    let multiLastX = null;
+    let multiLastY = null;
 
     const rotateVertex4D = ([x, y, z, w], ax, ay, azw) => {
       const sinX = Math.sin(ax), cosX = Math.cos(ax);
@@ -252,7 +255,7 @@
       if (e.shiftKey) {
         const deltaW = (dx + dy) * 0.01;
         rotZW += deltaW;
-        wOffset = Math.max(-4, Math.min(6, wOffset + deltaW * 1.5));
+        wOffset = clampWOffset(wOffset + deltaW * 1.5);
       } else {
         rotY += dx * 0.01;
         rotX += dy * 0.01;
@@ -266,8 +269,15 @@
     window.addEventListener('mousemove', onMove);
     window.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const delta = Math.sign(e.deltaY) * 0.4;
-      desiredCameraDist = clampCamera(desiredCameraDist + delta);
+      if (e.ctrlKey || e.metaKey) {
+        const delta = Math.sign(e.deltaY || e.deltaX) * 0.8;
+        desiredCameraDist = clampCamera(desiredCameraDist + delta);
+        return;
+      }
+      const dominantDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      const deltaW = dominantDelta * 0.01;
+      rotZW += deltaW;
+      wOffset = clampWOffset(wOffset + deltaW * 1.5);
     }, { passive: false });
 
     const distanceBetweenTouches = (touchList) => {
@@ -289,6 +299,8 @@
         dragging = false;
         canvas.classList.remove('dragging');
         pinchStartDistance = distanceBetweenTouches(e.touches);
+        multiLastX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        multiLastY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
       }
     };
 
@@ -305,15 +317,28 @@
       } else if (e.touches.length === 2) {
         const dist = distanceBetweenTouches(e.touches);
         if (pinchStartDistance !== null) {
-          const delta = (pinchStartDistance - dist) * 0.02;
+          const delta = (pinchStartDistance - dist) * 0.2;
           desiredCameraDist = clampCamera(desiredCameraDist + delta);
         }
+        const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        if (multiLastX !== null && multiLastY !== null) {
+          const dx = cx - multiLastX;
+          const dy = cy - multiLastY;
+          const deltaW = (dx + dy) * 0.01;
+          rotZW += deltaW;
+          wOffset = clampWOffset(wOffset + deltaW * 1.5);
+        }
+        multiLastX = cx;
+        multiLastY = cy;
         pinchStartDistance = dist;
       }
     };
 
     const handleTouchEnd = (e) => {
       pinchStartDistance = null;
+      multiLastX = null;
+      multiLastY = null;
       if (e.touches.length === 1) {
         const touch = e.touches[0];
         dragging = true;
