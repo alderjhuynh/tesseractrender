@@ -1,0 +1,248 @@
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tesseract render</title>
+  <style>
+    :root {
+      --bg: #0b0d10;
+      --fg: #d7f3ff;
+      --muted: #6e8fa6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      display: grid;
+      place-items: center;
+      height: 100vh;
+      background: radial-gradient(circle at 20% 20%, #101827, #0b0d10 40%), radial-gradient(circle at 80% 60%, #0f2235, #0b0d10 45%);
+      color: var(--fg);
+      font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+    }
+    #wrap { text-align: center; user-select: none; }
+    #hint {
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    pre {
+      display: none;
+    }
+    canvas {
+      margin: 0;
+      padding: 0;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+      cursor: grab;
+      width: 720px;
+      height: 480px;
+    }
+    canvas.dragging { cursor: grabbing; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="hint">oh god not the tesseract</div>
+    <canvas id="frame" width="720" height="480"></canvas>
+  </div>
+  <script>
+    const canvas = document.getElementById('frame');
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+
+    const tesseract = [];
+    const indexMap = new Map();
+    let idxCounter = 0;
+    for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) for (const w of [-1, 1]) {
+      tesseract.push([x, y, z, w]);
+      indexMap.set(`${x},${y},${z},${w}`, idxCounter++);
+    }
+    const idx = (x, y, z, w) => indexMap.get(`${x},${y},${z},${w}`);
+
+    const edges = [];
+    for (let i = 0; i < tesseract.length; i++) {
+      for (let j = i + 1; j < tesseract.length; j++) {
+        const diff = tesseract[i].reduce((acc, v, k) => acc + (v === tesseract[j][k] ? 0 : 1), 0);
+        if (diff === 1) edges.push([i, j]);
+      }
+    }
+
+    const faces = [];
+    const colors = ['#5dd1ff', '#fca5a5', '#c4b5fd', '#7dd3fc', '#a7f3d0', '#fcd34d'];
+
+    // x/y faces (z,w fixed)
+    for (const z of [-1, 1]) for (const w of [-1, 1]) {
+      faces.push([idx(-1, -1, z, w), idx(1, -1, z, w), idx(1, 1, z, w), idx(-1, 1, z, w)]);
+    }
+    // x/z faces (y,w fixed)
+    for (const y of [-1, 1]) for (const w of [-1, 1]) {
+      faces.push([idx(-1, y, -1, w), idx(1, y, -1, w), idx(1, y, 1, w), idx(-1, y, 1, w)]);
+    }
+    // y/z faces (x,w fixed)
+    for (const x of [-1, 1]) for (const w of [-1, 1]) {
+      faces.push([idx(x, -1, -1, w), idx(x, 1, -1, w), idx(x, 1, 1, w), idx(x, -1, 1, w)]);
+    }
+    // x/w faces (y,z fixed)
+    for (const y of [-1, 1]) for (const z of [-1, 1]) {
+      faces.push([idx(-1, y, z, -1), idx(1, y, z, -1), idx(1, y, z, 1), idx(-1, y, z, 1)]);
+    }
+    // y/w faces (x,z fixed)
+    for (const x of [-1, 1]) for (const z of [-1, 1]) {
+      faces.push([idx(x, -1, z, -1), idx(x, 1, z, -1), idx(x, 1, z, 1), idx(x, -1, z, 1)]);
+    }
+    // z/w faces (x,y fixed)
+    for (const x of [-1, 1]) for (const y of [-1, 1]) {
+      faces.push([idx(x, y, -1, -1), idx(x, y, 1, -1), idx(x, y, 1, 1), idx(x, y, -1, 1)]);
+    }
+
+    let rotX = 0.9;
+    let rotY = 0.9;
+    let rotZW = 0;
+    let wOffset = 0;
+    let dragging = false;
+    let lastX = 0;
+    let lastY = 0;
+    const autoSpinSpeed = 0.003;
+
+    const rotateVertex4D = ([x, y, z, w], ax, ay, azw) => {
+      const sinX = Math.sin(ax), cosX = Math.cos(ax);
+      const sinY = Math.sin(ay), cosY = Math.cos(ay);
+      const y1 = y * cosX - z * sinX;
+      const z1 = y * sinX + z * cosX;
+      const x2 = x * cosY + z1 * sinY;
+      const z2 = -x * sinY + z1 * cosY;
+      const sinZW = Math.sin(azw), cosZW = Math.cos(azw);
+      const z3 = z2 * cosZW - w * sinZW;
+      const w1 = z2 * sinZW + w * cosZW;
+      return [x2, y1, z3, w1];
+    };
+
+    const fov = 28;
+    let desiredCameraDist = 52.2;
+    let cameraDist = desiredCameraDist;
+    const wFov = 9;
+    const wCameraDist = 6;
+
+    const project4Dto3D = ([x, y, z, w]) => {
+      const wShifted = Math.max(-wCameraDist + 0.5, Math.min(wCameraDist * 3, w + wOffset));
+      const scale4d = wFov / (wShifted + wCameraDist);
+      return [x * scale4d, y * scale4d, z * scale4d];
+    };
+
+    const fitToView = (rotated3D) => {
+      const marginX = 2;
+      const marginY = 2;
+      const halfW = width / 2 - marginX;
+      const halfH = height / 2 - marginY;
+      const minDenom = 0.2;
+      let requiredDist = 0;
+
+      rotated3D.forEach(([x, y, z]) => {
+        if (halfW > 0 && Math.abs(x) > 1e-6) {
+          requiredDist = Math.max(requiredDist, (fov * Math.abs(x)) / halfW - z);
+        }
+        if (halfH > 0 && Math.abs(y) > 1e-6) {
+          requiredDist = Math.max(requiredDist, (fov * Math.abs(y)) / halfH - z);
+        }
+        requiredDist = Math.max(requiredDist, minDenom - z);
+      });
+
+      const targetDist = Math.max(desiredCameraDist, requiredDist);
+      cameraDist = cameraDist * 0.9 + targetDist * 0.1;
+    };
+    const project = ([x, y, z]) => {
+      const scale = fov / (z + cameraDist);
+      const px = x * scale * width / 2 + width / 2;
+      const py = -y * scale * height / 2 + height / 2;
+      return [px, py];
+    };
+
+    const render = () => {
+      if (!dragging) {
+        rotY += autoSpinSpeed;
+      }
+      const rotated4D = tesseract.map(v => rotateVertex4D(v, rotX, rotY, rotZW));
+      const rotated3D = rotated4D.map(project4Dto3D);
+      fitToView(rotated3D);
+
+      ctx.clearRect(0, 0, width, height);
+
+      const projected = rotated3D.map(project);
+      const faceDrawList = faces.map((face, idx) => {
+        const depth = face.reduce((acc, v) => acc + rotated3D[v][2], 0) / face.length;
+        return { face, depth, color: colors[idx % colors.length] };
+      }).sort((a, b) => a.depth - b.depth);
+
+      faceDrawList.forEach(({ face, color }) => {
+        ctx.beginPath();
+        face.forEach((vi, i) => {
+          const [px, py] = projected[vi];
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.5;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = '#0a1622';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+      });
+
+      ctx.strokeStyle = '#d7f3ff';
+      ctx.lineWidth = 1.4;
+      edges.forEach(([a, b]) => {
+        const [x0, y0] = projected[a];
+        const [x1, y1] = projected[b];
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+      });
+
+      requestAnimationFrame(render);
+    };
+
+    const startDrag = (e) => {
+      dragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      canvas.classList.add('dragging');
+    };
+    const stopDrag = () => {
+      dragging = false;
+      canvas.classList.remove('dragging');
+    };
+    const onMove = (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      if (e.shiftKey) {
+        const deltaW = (dx + dy) * 0.01;
+        rotZW += deltaW;
+        wOffset = Math.max(-4, Math.min(6, wOffset + deltaW * 1.5));
+      } else {
+        rotY += dx * 0.01;
+        rotX += dy * 0.01;
+      }
+      lastX = e.clientX;
+      lastY = e.clientY;
+    };
+
+    canvas.addEventListener('mousedown', startDrag);
+    window.addEventListener('mouseup', stopDrag);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const delta = Math.sign(e.deltaY) * 0.4;
+      desiredCameraDist = Math.max(2.2, Math.min(100, desiredCameraDist + delta));
+    }, { passive: false });
+    render();
+  </script>
+</body>
+</html>
