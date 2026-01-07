@@ -14,12 +14,13 @@
       margin: 0;
       display: grid;
       place-items: center;
-      height: 100vh;
+      min-height: 100vh;
+      padding: 12px;
       background: radial-gradient(circle at 20% 20%, #101827, #0b0d10 40%), radial-gradient(circle at 80% 60%, #0f2235, #0b0d10 45%);
       color: var(--fg);
       font-family: "SFMono-Regular", Menlo, Consolas, monospace;
     }
-    #wrap { text-align: center; user-select: none; }
+    #wrap { text-align: center; user-select: none; width: min(100%, 1100px); }
     #hint {
       font-size: 12px;
       letter-spacing: 0.08em;
@@ -37,8 +38,10 @@
       border-radius: 12px;
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
       cursor: grab;
-      width: 720px;
-      height: 480px;
+      width: min(92vw, 960px);
+      max-height: 80vh;
+      aspect-ratio: 3 / 2;
+      touch-action: none;
     }
     canvas.dragging { cursor: grabbing; }
   </style>
@@ -51,8 +54,27 @@
   <script>
     const canvas = document.getElementById('frame');
     const ctx = canvas.getContext('2d');
-    const width = canvas.width;
-    const height = canvas.height;
+    const aspectRatio = 3 / 2;
+    let width = canvas.width;
+    let height = canvas.height;
+
+    const resizeCanvas = () => {
+      const padding = 24;
+      const maxWidth = Math.max(260, window.innerWidth - padding * 2);
+      const maxHeight = Math.max(220, window.innerHeight - padding * 3);
+      const displayWidth = Math.min(maxWidth, maxHeight * aspectRatio);
+      const displayHeight = displayWidth / aspectRatio;
+
+      canvas.style.width = `${displayWidth}px`;
+      canvas.style.height = `${displayHeight}px`;
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
+      width = displayWidth;
+      height = displayHeight;
+    };
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
 
     const tesseract = [];
     const indexMap = new Map();
@@ -107,6 +129,10 @@
     let lastX = 0;
     let lastY = 0;
     const autoSpinSpeed = 0.003;
+    const minCameraDist = 2.2;
+    const maxCameraDist = 100;
+    const clampCamera = (value) => Math.max(minCameraDist, Math.min(maxCameraDist, value));
+    let pinchStartDistance = null;
 
     const rotateVertex4D = ([x, y, z, w], ax, ay, azw) => {
       const sinX = Math.sin(ax), cosX = Math.cos(ax);
@@ -209,6 +235,7 @@
     };
 
     const startDrag = (e) => {
+      e.preventDefault();
       dragging = true;
       lastX = e.clientX;
       lastY = e.clientY;
@@ -240,8 +267,69 @@
     window.addEventListener('wheel', (e) => {
       e.preventDefault();
       const delta = Math.sign(e.deltaY) * 0.4;
-      desiredCameraDist = Math.max(2.2, Math.min(100, desiredCameraDist + delta));
+      desiredCameraDist = clampCamera(desiredCameraDist + delta);
     }, { passive: false });
+
+    const distanceBetweenTouches = (touchList) => {
+      const first = touchList[0];
+      const second = touchList[1];
+      if (!first || !second) return 0;
+      return Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
+    };
+
+    const handleTouchStart = (e) => {
+      e.preventDefault();
+      if (e.touches.length === 1) {
+        const touch = e.touches[0];
+        dragging = true;
+        lastX = touch.clientX;
+        lastY = touch.clientY;
+        canvas.classList.add('dragging');
+      } else if (e.touches.length === 2) {
+        dragging = false;
+        canvas.classList.remove('dragging');
+        pinchStartDistance = distanceBetweenTouches(e.touches);
+      }
+    };
+
+    const handleTouchMove = (e) => {
+      e.preventDefault();
+      if (e.touches.length === 1 && dragging) {
+        const touch = e.touches[0];
+        const dx = touch.clientX - lastX;
+        const dy = touch.clientY - lastY;
+        rotY += dx * 0.01;
+        rotX += dy * 0.01;
+        lastX = touch.clientX;
+        lastY = touch.clientY;
+      } else if (e.touches.length === 2) {
+        const dist = distanceBetweenTouches(e.touches);
+        if (pinchStartDistance !== null) {
+          const delta = (pinchStartDistance - dist) * 0.02;
+          desiredCameraDist = clampCamera(desiredCameraDist + delta);
+        }
+        pinchStartDistance = dist;
+      }
+    };
+
+    const handleTouchEnd = (e) => {
+      pinchStartDistance = null;
+      if (e.touches.length === 1) {
+        const touch = e.touches[0];
+        dragging = true;
+        lastX = touch.clientX;
+        lastY = touch.clientY;
+        canvas.classList.add('dragging');
+      } else {
+        dragging = false;
+        canvas.classList.remove('dragging');
+      }
+    };
+
+    canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+    canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+    canvas.addEventListener('touchcancel', handleTouchEnd, { passive: false });
     render();
   </script>
 </body>
